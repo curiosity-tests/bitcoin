@@ -154,125 +154,21 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "::notice title=debug_pull_request_number_str::${{ github.event.number }}"
           fi
+      - name: Checkout
         uses: crashappsec/action-checkout@main
         with:
           chalk: ${{ env.CHALK_ON }}
           profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           observables_continue_on_error: false
           lfs: false
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: ${{ env.FETCH_DEPTH }}
-        name: Determine commit range
-        run: |
-          # Checkout HEAD~ and find the test base commit.
-          # Checkout HEAD~ because it would be wasteful to rerun
-          # tests on the PR head commit that are already run
-          # by other jobs.
-          git checkout HEAD~
-          # Moreover, pull requests that contain a merge commit
-          # are generally draft pull requests that merge in other
-          # pull requests, so only check the relevant commits
-          # after the last merge commit. A merge commit could
-          # also be a subtree merge commit, which may be
-          # worthwhile to check. However, it is rare that the
-          # subtree merge commit is not the top commit (which
-          # would be skipped anyway by this task, because it is
-          # run by all other tasks). Also, `git rebase --exec`
-          # does not work on merge commits, so if this was
-          # important to check, the logic would have to be
-          # rewritten.
-          #
-          # Figure out test base commit by listing ancestors of
-          # HEAD, excluding ancestors of the most recent merge
-          # commit, ordering them from oldest to newest, and
-          # taking the first one.
-          #
-          # In the command below, the ^@ suffix is used to refer
-          # to all parents of the merge commit as described in:
-          # https://git-scm.com/docs/git-rev-parse#_other_rev_parent_shorthand_notations
-          # and the ^ prefix is used to exclude these parents
-          # and all their ancestors from the rev-list output
-          # as described in:
-          # https://git-scm.com/docs/git-rev-list
-          MERGE_BASE=$(git rev-list -n1 --merges HEAD)
-          EXCLUDE_MERGE_BASE_ANCESTORS=
-          # MERGE_BASE can be empty due to limited fetch-depth
-          if test -n "$MERGE_BASE"; then
-            EXCLUDE_MERGE_BASE_ANCESTORS=^${MERGE_BASE}^@
-          fi
-          echo "TEST_BASE=$(git rev-list -n${{ github.event.pull_request.commits }} --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
-        run: |
-          git fetch origin "${GITHUB_BASE_REF}"
-          git config user.email "ci@example.com"
-          git config user.name "CI"
-        run: |
-          sudo apt-get update
-          sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
-          sudo pip3 install --break-system-packages pycapnp
-        name: Compile and run tests
-        run: |
-          # Run tests on commits after the last merge commit and before the PR head commit
-          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
+          # Ensure the latest merged pull request state is used, even on re-runs.
+          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
       - name: Assert instrumentation is live
         if: env.CHALK_ON == 'true'
         run: |
           test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
           test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
 
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          # Ensure the latest merged pull request state is used, even on re-runs.
-          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
-        
-        name: Clang version
-        run: |
-          # Use the latest Xcode supported by the version of macOS denoted in
-          # doc/release-notes-empty-template.md and providing at least the
-          # minimum clang version denoted in doc/dependencies.md.
-          # See: https://developer.apple.com/documentation/xcode-release-notes/xcode-16_2-release-notes
-          sudo xcode-select --switch /Applications/Xcode_16.2.app
-          clang --version
-        
-        name: Install Homebrew packages
-        env:
-          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
-        run: |
-          # A workaround for "The `brew link` step did not complete successfully" error.
-          brew install --quiet python@3 || brew link --overwrite python@3
-          brew install --quiet coreutils ninja pkgconf ccache boost zeromq qt@6 qrencode capnp
-        
-        name: Set Ccache directory
-        run: echo "CCACHE_DIR=${RUNNER_TEMP}/ccache_dir" >> "$GITHUB_ENV"
-        
-        name: Restore Ccache cache
-        id: ccache-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ github.job }}-${{ matrix.job-type }}-ccache-${{ github.run_id }}
-          restore-keys: ${{ github.job }}-${{ matrix.job-type }}-ccache-
-        
-        name: Create git archive
-        run: |
-          git log -1
-          git archive --format=tar --prefix=repo_archive/ --output=repo.tar HEAD
-          tar -xf repo.tar
-        
-        name: CI script
-        run: |
-          cd repo_archive
-          ./ci/test_run_all.sh
-        env:
-          FILE_ENV: ${{ matrix.file-env }}
-        
-        name: Save Ccache cache
-        uses: actions/cache/save@v5
-        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && steps.ccache-cache.outputs.cache-hit != 'true'
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          # https://github.com/actions/cache/blob/main/tips-and-workarounds.md#update-a-cache
-          key: ${{ steps.ccache-cache.outputs.cache-primary-key }}
       - name: Record commit
         id: record-commit
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -309,75 +205,20 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "::notice title=debug_pull_request_number_str::${{ github.event.number }}"
           fi
+
+      - name: Checkout
         uses: crashappsec/action-checkout@main
         with:
           chalk: ${{ env.CHALK_ON }}
           profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           observables_continue_on_error: false
           lfs: false
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: ${{ env.FETCH_DEPTH }}
-        name: Determine commit range
-        run: |
-          # Checkout HEAD~ and find the test base commit.
-          # Checkout HEAD~ because it would be wasteful to rerun
-          # tests on the PR head commit that are already run
-          # by other jobs.
-          git checkout HEAD~
-          # Moreover, pull requests that contain a merge commit
-          # are generally draft pull requests that merge in other
-          # pull requests, so only check the relevant commits
-          # after the last merge commit. A merge commit could
-          # also be a subtree merge commit, which may be
-          # worthwhile to check. However, it is rare that the
-          # subtree merge commit is not the top commit (which
-          # would be skipped anyway by this task, because it is
-          # run by all other tasks). Also, `git rebase --exec`
-          # does not work on merge commits, so if this was
-          # important to check, the logic would have to be
-          # rewritten.
-          #
-          # Figure out test base commit by listing ancestors of
-          # HEAD, excluding ancestors of the most recent merge
-          # commit, ordering them from oldest to newest, and
-          # taking the first one.
-          #
-          # In the command below, the ^@ suffix is used to refer
-          # to all parents of the merge commit as described in:
-          # https://git-scm.com/docs/git-rev-parse#_other_rev_parent_shorthand_notations
-          # and the ^ prefix is used to exclude these parents
-          # and all their ancestors from the rev-list output
-          # as described in:
-          # https://git-scm.com/docs/git-rev-list
-          MERGE_BASE=$(git rev-list -n1 --merges HEAD)
-          EXCLUDE_MERGE_BASE_ANCESTORS=
-          # MERGE_BASE can be empty due to limited fetch-depth
-          if test -n "$MERGE_BASE"; then
-            EXCLUDE_MERGE_BASE_ANCESTORS=^${MERGE_BASE}^@
-          fi
-          echo "TEST_BASE=$(git rev-list -n${{ github.event.pull_request.commits }} --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
-        run: |
-          git fetch origin "${GITHUB_BASE_REF}"
-          git config user.email "ci@example.com"
-          git config user.name "CI"
-        run: |
-          sudo apt-get update
-          sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
-          sudo pip3 install --break-system-packages pycapnp
-        name: Compile and run tests
-        run: |
-          # Run tests on commits after the last merge commit and before the PR head commit
-          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
+          ref: ${{ needs.record-frozen-commit.outputs.commit }}
       - name: Assert instrumentation is live
         if: env.CHALK_ON == 'true'
         run: |
           test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
           test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.record-frozen-commit.outputs.commit }}
 
       - name: Configure environment
         uses: ./.github/actions/configure-environment
@@ -386,12 +227,12 @@ jobs:
         id: restore-cache
         uses: ./.github/actions/cache/restore
         with:
-          provider: ${{ github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha' }}
+          provider: ${{ github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha' }}
 
       - name: Configure Docker
         uses: ./.github/actions/configure-docker
         with:
-          provider: ${{ github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha' }}
+          provider: ${{ github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha' }}
 
       - name: CI script
         run: ./ci/test_run_all.sh
@@ -399,7 +240,7 @@ jobs:
       - name: Save caches
         uses: ./.github/actions/cache/save
         with:
-          provider: ${{ github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha' }}
+          provider: ${{ github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha' }}
 
       - name: Upload built executables
         uses: actions/upload-artifact@v7
@@ -545,125 +386,21 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "::notice title=debug_pull_request_number_str::${{ github.event.number }}"
           fi
+
+      - name: Checkout
         uses: crashappsec/action-checkout@main
         with:
           chalk: ${{ env.CHALK_ON }}
           profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           observables_continue_on_error: false
           lfs: false
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: ${{ env.FETCH_DEPTH }}
-        name: Determine commit range
-        run: |
-          # Checkout HEAD~ and find the test base commit.
-          # Checkout HEAD~ because it would be wasteful to rerun
-          # tests on the PR head commit that are already run
-          # by other jobs.
-          git checkout HEAD~
-          # Moreover, pull requests that contain a merge commit
-          # are generally draft pull requests that merge in other
-          # pull requests, so only check the relevant commits
-          # after the last merge commit. A merge commit could
-          # also be a subtree merge commit, which may be
-          # worthwhile to check. However, it is rare that the
-          # subtree merge commit is not the top commit (which
-          # would be skipped anyway by this task, because it is
-          # run by all other tasks). Also, `git rebase --exec`
-          # does not work on merge commits, so if this was
-          # important to check, the logic would have to be
-          # rewritten.
-          #
-          # Figure out test base commit by listing ancestors of
-          # HEAD, excluding ancestors of the most recent merge
-          # commit, ordering them from oldest to newest, and
-          # taking the first one.
-          #
-          # In the command below, the ^@ suffix is used to refer
-          # to all parents of the merge commit as described in:
-          # https://git-scm.com/docs/git-rev-parse#_other_rev_parent_shorthand_notations
-          # and the ^ prefix is used to exclude these parents
-          # and all their ancestors from the rev-list output
-          # as described in:
-          # https://git-scm.com/docs/git-rev-list
-          MERGE_BASE=$(git rev-list -n1 --merges HEAD)
-          EXCLUDE_MERGE_BASE_ANCESTORS=
-          # MERGE_BASE can be empty due to limited fetch-depth
-          if test -n "$MERGE_BASE"; then
-            EXCLUDE_MERGE_BASE_ANCESTORS=^${MERGE_BASE}^@
-          fi
-          echo "TEST_BASE=$(git rev-list -n${{ github.event.pull_request.commits }} --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
-        run: |
-          git fetch origin "${GITHUB_BASE_REF}"
-          git config user.email "ci@example.com"
-          git config user.name "CI"
-        run: |
-          sudo apt-get update
-          sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
-          sudo pip3 install --break-system-packages pycapnp
-        name: Compile and run tests
-        run: |
-          # Run tests on commits after the last merge commit and before the PR head commit
-          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
+          # Ensure the latest merged pull request state is used, even on re-runs.
+          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
       - name: Assert instrumentation is live
         if: env.CHALK_ON == 'true'
         run: |
           test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
           test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          # Ensure the latest merged pull request state is used, even on re-runs.
-          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
-        
-        name: Clang version
-        run: |
-          # Use the latest Xcode supported by the version of macOS denoted in
-          # doc/release-notes-empty-template.md and providing at least the
-          # minimum clang version denoted in doc/dependencies.md.
-          # See: https://developer.apple.com/documentation/xcode-release-notes/xcode-16_2-release-notes
-          sudo xcode-select --switch /Applications/Xcode_16.2.app
-          clang --version
-        
-        name: Install Homebrew packages
-        env:
-          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
-        run: |
-          # A workaround for "The `brew link` step did not complete successfully" error.
-          brew install --quiet python@3 || brew link --overwrite python@3
-          brew install --quiet coreutils ninja pkgconf ccache boost zeromq qt@6 qrencode capnp
-        
-        name: Set Ccache directory
-        run: echo "CCACHE_DIR=${RUNNER_TEMP}/ccache_dir" >> "$GITHUB_ENV"
-        
-        name: Restore Ccache cache
-        id: ccache-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ github.job }}-${{ matrix.job-type }}-ccache-${{ github.run_id }}
-          restore-keys: ${{ github.job }}-${{ matrix.job-type }}-ccache-
-        
-        name: Create git archive
-        run: |
-          git log -1
-          git archive --format=tar --prefix=repo_archive/ --output=repo.tar HEAD
-          tar -xf repo.tar
-        
-        name: CI script
-        run: |
-          cd repo_archive
-          ./ci/test_run_all.sh
-        env:
-          FILE_ENV: ${{ matrix.file-env }}
-        
-        name: Save Ccache cache
-        uses: actions/cache/save@v5
-        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && steps.ccache-cache.outputs.cache-hit != 'true'
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          # https://github.com/actions/cache/blob/main/tips-and-workarounds.md#update-a-cache
-          key: ${{ steps.ccache-cache.outputs.cache-primary-key }}
 
       - name: Configure environment
         uses: ./.github/actions/configure-environment
@@ -672,15 +409,15 @@ jobs:
         id: restore-cache
         uses: ./.github/actions/cache/restore
         with:
-          provider: ${{ matrix.provider || (github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha') }}
+          provider: ${{ matrix.provider || (github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha') }}
 
       - name: Configure Docker
         uses: ./.github/actions/configure-docker
         with:
-          provider: ${{ matrix.provider || (github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha') }}
+          provider: ${{ matrix.provider || (github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha') }}
 
       - name: Clear unnecessary files
-        if: ${{ github.repository != 'bitcoin/bitcoin' || matrix.provider == 'gha' }} # Only needed on GHA runners
+        if: ${{ github.repository != 'curiosity-tests/bitcoin' || matrix.provider == 'gha' }} # Only needed on GHA runners
         uses: ./.github/actions/clear-files
 
       - name: Enable bpfcc script
@@ -700,7 +437,7 @@ jobs:
       - name: Save caches
         uses: ./.github/actions/cache/save
         with:
-          provider: ${{ matrix.provider || (github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha') }}
+          provider: ${{ matrix.provider || (github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha') }}
 
   lint:
     name: 'lint'
@@ -719,81 +456,26 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "::notice title=debug_pull_request_number_str::${{ github.event.number }}"
           fi
+
+      - name: Checkout
         uses: crashappsec/action-checkout@main
         with:
           chalk: ${{ env.CHALK_ON }}
           profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           observables_continue_on_error: false
           lfs: false
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: ${{ env.FETCH_DEPTH }}
-        name: Determine commit range
-        run: |
-          # Checkout HEAD~ and find the test base commit.
-          # Checkout HEAD~ because it would be wasteful to rerun
-          # tests on the PR head commit that are already run
-          # by other jobs.
-          git checkout HEAD~
-          # Moreover, pull requests that contain a merge commit
-          # are generally draft pull requests that merge in other
-          # pull requests, so only check the relevant commits
-          # after the last merge commit. A merge commit could
-          # also be a subtree merge commit, which may be
-          # worthwhile to check. However, it is rare that the
-          # subtree merge commit is not the top commit (which
-          # would be skipped anyway by this task, because it is
-          # run by all other tasks). Also, `git rebase --exec`
-          # does not work on merge commits, so if this was
-          # important to check, the logic would have to be
-          # rewritten.
-          #
-          # Figure out test base commit by listing ancestors of
-          # HEAD, excluding ancestors of the most recent merge
-          # commit, ordering them from oldest to newest, and
-          # taking the first one.
-          #
-          # In the command below, the ^@ suffix is used to refer
-          # to all parents of the merge commit as described in:
-          # https://git-scm.com/docs/git-rev-parse#_other_rev_parent_shorthand_notations
-          # and the ^ prefix is used to exclude these parents
-          # and all their ancestors from the rev-list output
-          # as described in:
-          # https://git-scm.com/docs/git-rev-list
-          MERGE_BASE=$(git rev-list -n1 --merges HEAD)
-          EXCLUDE_MERGE_BASE_ANCESTORS=
-          # MERGE_BASE can be empty due to limited fetch-depth
-          if test -n "$MERGE_BASE"; then
-            EXCLUDE_MERGE_BASE_ANCESTORS=^${MERGE_BASE}^@
-          fi
-          echo "TEST_BASE=$(git rev-list -n${{ github.event.pull_request.commits }} --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
-        run: |
-          git fetch origin "${GITHUB_BASE_REF}"
-          git config user.email "ci@example.com"
-          git config user.name "CI"
-        run: |
-          sudo apt-get update
-          sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
-          sudo pip3 install --break-system-packages pycapnp
-        name: Compile and run tests
-        run: |
-          # Run tests on commits after the last merge commit and before the PR head commit
-          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
+          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
+          fetch-depth: 0
       - name: Assert instrumentation is live
         if: env.CHALK_ON == 'true'
         run: |
           test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
           test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
 
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
-          fetch-depth: 0
-
       - name: Configure Docker
         uses: ./.github/actions/configure-docker
         with:
-          provider: ${{ github.repository == 'bitcoin/bitcoin' && 'warp' || 'gha' }}
+          provider: ${{ github.repository == 'curiosity-tests/bitcoin' && 'warp' || 'gha' }}
 
       - name: CI script
         run: |
